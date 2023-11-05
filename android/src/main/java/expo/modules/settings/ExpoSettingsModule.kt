@@ -1,47 +1,124 @@
+
+
 package expo.modules.settings
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import expo.modules.kotlin.Promise
+import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.settings.ml.Android
+import org.tensorflow.lite.support.image.TensorImage
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.util.Base64
+import org.tensorflow.lite.support.common.FileUtil
+import java.io.ByteArrayOutputStream
 
-class ExpoSettingsModule : Module() {
-  // Each module class must implement the definition function. The definition consists of components
-  // that describes the module's functionality and behavior.
-  // See https://docs.expo.dev/modules/module-api for more details about available components.
+
+class ExpoSettingsModule : Module()  {
+
+  private lateinit var model: Android
+  lateinit var labels:List<String>
+  var colors = listOf<Int>(
+    Color.BLUE, Color.GREEN, Color.RED, Color.CYAN, Color.GRAY, Color.BLACK,
+    Color.DKGRAY, Color.MAGENTA, Color.YELLOW, Color.RED)
+    val paint = Paint()
+
+
+  private val context: Context
+    get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+
+
+
+
   override fun definition() = ModuleDefinition {
-    // Sets the name of the module that JavaScript code will use to refer to the module. Takes a string as an argument.
-    // Can be inferred from module's class name, but it's recommended to set it explicitly for clarity.
-    // The module will be accessible from `requireNativeModule('ExpoSettings')` in JavaScript.
     Name("ExpoSettings")
 
-    // Sets constant properties on the module. Can take a dictionary or a closure that returns a dictionary.
-    Constants(
-      "PI" to Math.PI
-    )
 
-    // Defines event names that the module can send to JavaScript.
-    Events("onChange")
 
-    // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
-    Function("hello") {
-      "Hello world! 👋"
-    }
 
-    // Defines a JavaScript function that always returns a Promise and whose native code
-    // is by default dispatched on the different thread than the JavaScript runtime runs on.
-    AsyncFunction("setValueAsync") { value: String ->
-      // Send an event to JavaScript.
-      sendEvent("onChange", mapOf(
-        "value" to value
-      ))
-    }
 
-    // Enables the module to be used as a native view. Definition components that are accepted as part of
-    // the view definition: Prop, Events.
-    View(ExpoSettingsView::class) {
-      // Defines a setter for the `name` prop.
-      Prop("name") { view: ExpoSettingsView, prop: String ->
-        println(prop)
+    Function("getTheme") { theme: String   ->
+      try {
+
+          labels = FileUtil.loadLabels(context, "labels.txt")
+
+      if (!::model.isInitialized) {
+        model = Android.newInstance(context)
       }
-    }
+
+        val imageBitmap = base64ToBitmap(theme)
+        val image = TensorImage.fromBitmap(imageBitmap)
+
+
+
+        val outputs = model.process(image)
+
+        val locations = outputs.locationAsTensorBuffer.floatArray
+        val classes = outputs.categoryAsTensorBuffer.floatArray
+        val scores = outputs.scoreAsTensorBuffer.floatArray
+
+
+
+
+          var mutable = imageBitmap.copy(Bitmap.Config.ARGB_8888, true)
+          val canvas = Canvas(mutable)
+
+
+          val h = mutable.height
+          val w = mutable.width
+          paint.textSize = h/15f
+          paint.strokeWidth = h/85f
+          var x = 0
+
+
+          scores.forEachIndexed { index, fl ->
+              x = index
+              x *= 4
+              if(fl > 0.5){
+                  paint.setColor(colors.get(index))
+                  paint.style = Paint.Style.STROKE
+                  canvas.drawRect(RectF(locations.get(x+1)*w, locations.get(x)*h, locations.get(x+3)*w, locations.get(x+2)*h), paint)
+                  paint.style = Paint.Style.FILL
+                  canvas.drawText(labels.get(classes.get(index).toInt())+" "+fl.toString(), locations.get(x+1)*w, locations.get(x)*h, paint)
+              }
+          }
+
+
+          // Conversão do bitmap de volta para string base64
+        val outputStream = ByteArrayOutputStream()
+          mutable.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+        val base64Image = Base64.encodeToString(outputStream.toByteArray(), Base64.DEFAULT)
+
+        // Resolução da promessa com a imagem base64
+
+
+        return@Function base64Image
+
+    } catch (e: Exception) {
+    // Em caso de erro, rejeita a promessa.
+        return@Function e.message
+
+  } finally {
+    // Considera liberar os recursos do modelo se não for mais usado.
+    // model.close()
+//          model.close()
   }
+    }
+
+
+  }
+
+   private fun base64ToBitmap(base64Str: String): Bitmap {
+     val imageAsBytes = android.util.Base64.decode(base64Str.toByteArray(), android.util.Base64.DEFAULT)
+     return BitmapFactory.decodeByteArray(imageAsBytes, 0, imageAsBytes.size)
+   }
+
+
+
 }
